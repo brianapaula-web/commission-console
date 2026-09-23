@@ -3,9 +3,11 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Sales commission administration console — calculation, approvals, statements, accrual and audit",
+  "description": "Sales commission administration console",
   "scripts": {
-    "build": "node build/build.mjs"
+    "build": "node build/build.mjs",
+    "import": "node tools/import.mjs",
+    "import:dry": "node tools/import.mjs --dry-run"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
