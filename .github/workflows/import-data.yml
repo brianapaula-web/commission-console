@@ -1,0 +1,41 @@
+name: Load data into Supabase
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'data/**'
+      - 'tools/import.mjs'
+      - 'src/file-parsing.js'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Parse and report without writing anything'
+        type: boolean
+        default: false
+
+concurrency:
+  group: import-data
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install
+
+      - name: Parse the data files
+        run: npm run import:dry
+
+      - name: Load into Supabase
+        if: ${{ inputs.dry_run != true }}
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          SUPABASE_EMAIL: ${{ secrets.SUPABASE_EMAIL }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+        run: npm run import
