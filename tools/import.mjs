@@ -32,9 +32,9 @@ const EMAIL = process.env.SUPABASE_EMAIL;
 const PASSWORD = process.env.SUPABASE_PASSWORD;
 
 const KINDS = [
-  { kind: "bookings", dir: "data/bookings", rpc: "import_bookings" },
-  { kind: "revenue",  dir: "data/revenue",  rpc: "import_revenue"  },
-  { kind: "rates",    dir: "data/rates",    rpc: "import_rates"    },
+  { kind: "bookings", dir: "bookings", rpc: "import_bookings" },
+  { kind: "revenue",  dir: "revenue",  rpc: "import_revenue"  },
+  { kind: "rates",    dir: "rates",    rpc: "import_rates"    },
 ];
 
 const files = (dir) => {
