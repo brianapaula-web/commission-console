@@ -10,11 +10,16 @@
  * finance-only check, the all-or-nothing transaction, the skip of rows already
  * present, and the audit entry. No service key is involved.
  *
- * Folder layout:
- *   data/bookings/*.xlsx   any file name
- *   data/revenue/*.xlsx    any file name
- *   data/rates/*.xlsx      prefix the name with the effective date,
- *                          e.g. 2026-04-01_comp_rates.xlsx
+ * Files are found anywhere in the repository and sorted by what the file is
+ * called, so the folder they sit in does not matter:
+ *
+ *   ...booking...  -> bookings
+ *   ...revenue...  -> revenue
+ *   ...rate... or ...comp...  -> rates, and the name must start with the date
+ *                                the rates take effect, e.g.
+ *                                2026-04-01_comp_rates.xlsx
+ *
+ * Anything that matches none of those is listed and skipped.
  */
 import { readFileSync, readdirSync, existsSync } from "fs";
 import { join, dirname, basename, extname } from "path";
@@ -31,21 +36,37 @@ const ANON = process.env.SUPABASE_ANON_KEY;
 const EMAIL = process.env.SUPABASE_EMAIL;
 const PASSWORD = process.env.SUPABASE_PASSWORD;
 
-const KINDS = [
-  { kind: "bookings", dir: "bookings", rpc: "import_bookings" },
-  { kind: "revenue",  dir: "revenue",  rpc: "import_revenue"  },
-  { kind: "rates",    dir: "rates",    rpc: "import_rates"    },
-];
-
-const files = (dir) => {
-  const full = join(root, dir);
-  if (!existsSync(full)) return [];
-  return readdirSync(full)
-    .filter((f) => [".xlsx", ".xls", ".csv"].includes(extname(f).toLowerCase()))
-    .filter((f) => !f.startsWith("~$") && !f.startsWith("."))   // Excel lock files
-    .sort()
-    .map((f) => join(full, f));
+const RPC = {
+  bookings: "import_bookings",
+  revenue:  "import_revenue",
+  rates:    "import_rates",
 };
+
+/* Folders that never hold data files. */
+const SKIP_DIRS = new Set(["node_modules", ".git", ".github", "build", "dist", "sql", "src", "tools"]);
+const DATA_EXT = new Set([".xlsx", ".xls", ".csv"]);
+
+/* What kind of file is this? Decided by the name, not the folder. */
+function classify(name) {
+  const n = name.toLowerCase();
+  if (/revenue/.test(n)) return "revenue";
+  if (/booking/.test(n)) return "bookings";
+  if (/rate|comp/.test(n)) return "rates";
+  return null;
+}
+
+function walk(dir, found = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name.startsWith(".") || entry.name.startsWith("~$")) continue;
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (!SKIP_DIRS.has(entry.name)) walk(full, found);
+    } else if (DATA_EXT.has(extname(entry.name).toLowerCase())) {
+      found.push(full);
+    }
+  }
+  return found;
+}
 
 /* A rate file must say when its rates start, so the date is taken from the
    front of the file name. Without it an old sheet could silently reprice
@@ -67,38 +88,49 @@ function parseOne(path, kind) {
 
 let problems = 0;
 const plan = [];
+const ignored = [];
 
-console.log(dry ? "Parsing data/ (dry run — nothing will be written)\n"
-                : "Parsing data/\n");
+console.log(dry ? "Scanning the repository (dry run — nothing will be written)\n"
+                : "Scanning the repository\n");
 
-for (const { kind, dir, rpc } of KINDS) {
-  const found = files(dir);
-  if (found.length === 0) { console.log(`  ${dir.padEnd(16)} — no files`); continue; }
-  for (const path of found) {
-    const name = basename(path);
-    const res = parseOne(path, kind);
-    if (res.error) {
-      console.log(`  ✗ ${dir}/${name}\n      ${res.error}`);
+const found = walk(root).sort();
+for (const path of found) {
+  const rel = path.slice(root.length + 1).replace(/\\/g, "/");
+  const name = basename(path);
+  const kind = classify(name);
+  if (!kind) { ignored.push(rel); continue; }
+
+  const res = parseOne(path, kind);
+  if (res.error) {
+    console.log(`  \u2717 ${rel}\n      ${res.error}`);
+    problems++;
+    continue;
+  }
+  let effective = null;
+  if (kind === "rates") {
+    effective = effectiveFrom(path);
+    if (!effective) {
+      console.log(`  \u2717 ${rel}`);
+      console.log(`      A rate file must start with the date its rates take effect,`);
+      console.log(`      e.g. 2026-01-01_${name}`);
       problems++;
       continue;
     }
-    let effective = null;
-    if (kind === "rates") {
-      effective = effectiveFrom(path);
-      if (!effective) {
-        console.log(`  ✗ ${dir}/${name}`);
-        console.log(`      Rate files must start with the effective date, e.g. 2026-04-01_${name}`);
-        problems++;
-        continue;
-      }
-    }
-    console.log(`  ✓ ${dir}/${name}`);
-    console.log(`      sheet "${res.sheet}", header row ${res.headerRow + 1}, ${res.rows.length} row(s)` +
-                (effective ? `, effective ${effective}` : ""));
-    if (res.rows[0]) console.log(`      first row: ${JSON.stringify(res.rows[0])}`);
-    plan.push({ kind, rpc, name, rows: res.rows, effective });
   }
+  console.log(`  \u2713 ${rel}  [${kind}]`);
+  console.log(`      sheet "${res.sheet}", header row ${res.headerRow + 1}, ${res.rows.length} row(s)` +
+              (effective ? `, effective ${effective}` : ""));
+  plan.push({ kind, rpc: RPC[kind], name, rel, rows: res.rows, effective });
 }
+
+if (ignored.length) {
+  console.log(`\n  ${ignored.length} file(s) ignored — the name says nothing about what they hold:`);
+  ignored.forEach((f) => console.log(`      ${f}`));
+}
+
+/* Rates must load before bookings, or a booking has no rate to price it with. */
+const ORDER = { rates: 0, bookings: 1, revenue: 2 };
+plan.sort((a, b) => ORDER[a.kind] - ORDER[b.kind] || a.name.localeCompare(b.name));
 
 if (problems) {
   console.error(`\n${problems} file(s) could not be parsed. Nothing was loaded.`);
